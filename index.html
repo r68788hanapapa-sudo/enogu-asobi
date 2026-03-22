@@ -67,10 +67,76 @@
     box-shadow: 0 2px 12px rgba(0,0,0,0.3);
     border-color: #fff;
   }
+
+  /* Tool bar (top-right) */
+  #toolbar {
+    position: fixed;
+    top: max(12px, env(safe-area-inset-top));
+    right: 12px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    z-index: 10;
+    pointer-events: none;
+  }
+  .tool-btn {
+    pointer-events: auto;
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    border: 2px solid rgba(0,0,0,0.12);
+    background: rgba(255,255,255,0.85);
+    backdrop-filter: blur(4px);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    color: #555;
+    transition: transform 0.12s ease, background 0.12s ease;
+    -webkit-tap-highlight-color: transparent;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  }
+  .tool-btn:active {
+    transform: scale(0.9);
+    background: rgba(255,255,255,1);
+  }
+
+  /* Size selector */
+  #size-selector {
+    position: fixed;
+    top: max(12px, env(safe-area-inset-top));
+    left: 12px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    z-index: 10;
+    pointer-events: none;
+  }
+  .size-btn {
+    pointer-events: auto;
+    border-radius: 50%;
+    border: 2px solid rgba(0,0,0,0.12);
+    background: rgba(255,255,255,0.85);
+    backdrop-filter: blur(4px);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: transform 0.12s ease, border-color 0.12s ease;
+    -webkit-tap-highlight-color: transparent;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  }
+  .size-btn.active {
+    border-color: rgba(0,0,0,0.4);
+    background: rgba(255,255,255,1);
+    transform: scale(1.1);
+  }
+  .size-dot {
+    border-radius: 50%;
+    background: #555;
+  }
 </style>
 </head>
 <body>
 
+<div id="size-selector"></div>
+<div id="toolbar"></div>
 <div id="palette"></div>
 
 <script>
@@ -99,9 +165,16 @@ const PALETTE = [
   { name: 'だいだい', rgb: [240, 130, 30] },
 ];
 
+const SIZES = [
+  { label: 'S', mult: 0.5, dot: 6,  btn: 32 },
+  { label: 'M', mult: 1.0, dot: 10, btn: 36 },
+  { label: 'L', mult: 2.0, dot: 14, btn: 40 },
+];
+
 let particles = [];
 let activeColorIdx = 0;
 let randomMode = false;
+let activeSizeIdx = 1; // M default
 let paletteHeight = 72;
 let pg;
 let lastSpawnFrame = -999;
@@ -134,7 +207,7 @@ class Droplet {
     this.y = y;
     this.baseRgb = [...rgb];
     this.rgb = [...rgb];
-    const maxR = getMaxRadius();
+    const maxR = getMaxRadius() * SIZES[activeSizeIdx].mult;
     this.radius = 2;
     this.maxRadius = maxR * (0.6 + Math.random() * 0.4);
     this.growSpeed = 0.2 + Math.random() * 0.15;
@@ -293,6 +366,8 @@ function setup() {
   pg = createGraphics(windowWidth, windowHeight);
   pg.pixelDensity(1);
   buildPalette();
+  buildToolbar();
+  buildSizeSelector();
   background(...CONFIG.BG_COLOR);
 
   // Workaround: ensure animation loop starts even if tab is not focused
@@ -389,6 +464,60 @@ function buildPalette() {
     updatePaletteUI();
   });
   container.appendChild(rBtn);
+}
+
+// === Toolbar (reset) ===
+function buildToolbar() {
+  const container = document.getElementById('toolbar');
+  container.innerHTML = '';
+
+  const resetBtn = document.createElement('button');
+  resetBtn.className = 'tool-btn';
+  resetBtn.textContent = '\u21BA'; // ↺
+  resetBtn.setAttribute('aria-label', 'リセット');
+  resetBtn.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    particles = [];
+    pg.clear();
+    background(...CONFIG.BG_COLOR);
+  });
+  container.appendChild(resetBtn);
+}
+
+// === Size Selector ===
+function buildSizeSelector() {
+  const container = document.getElementById('size-selector');
+  container.innerHTML = '';
+
+  SIZES.forEach((s, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'size-btn' + (i === activeSizeIdx ? ' active' : '');
+    btn.style.width = s.btn + 'px';
+    btn.style.height = s.btn + 'px';
+
+    const dot = document.createElement('div');
+    dot.className = 'size-dot';
+    dot.style.width = s.dot + 'px';
+    dot.style.height = s.dot + 'px';
+    btn.appendChild(dot);
+
+    btn.setAttribute('aria-label', s.label);
+    btn.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      activeSizeIdx = i;
+      updateSizeUI();
+    });
+    container.appendChild(btn);
+  });
+}
+
+function updateSizeUI() {
+  const buttons = document.querySelectorAll('.size-btn');
+  buttons.forEach((btn, i) => {
+    btn.classList.toggle('active', i === activeSizeIdx);
+  });
 }
 
 function updatePaletteUI() {
