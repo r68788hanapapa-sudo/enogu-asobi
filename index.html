@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>えのぐあそび</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    touch-action: none;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    background: #faf8f5;
+  }
+  canvas { display: block; }
+
+  #palette {
+    position: fixed;
+    bottom: 0;
+    left: 0; right: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 8px max(14px, env(safe-area-inset-bottom));
+    z-index: 10;
+    pointer-events: none;
+  }
+  .color-btn {
+    pointer-events: auto;
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    border: 3px solid rgba(255,255,255,0.9);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .color-btn.active {
+    transform: scale(1.25);
+    box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+    border-color: #fff;
+  }
+  .random-btn {
+    pointer-events: auto;
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    border: 3px solid rgba(255,255,255,0.9);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    cursor: pointer;
+    transition: transform 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
+    background: conic-gradient(
+      #e74c3c 0deg, #f39c12 60deg, #f1c40f 120deg,
+      #2ecc71 180deg, #3498db 240deg, #9b59b6 300deg, #e74c3c 360deg
+    );
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; color: #fff;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.4);
+  }
+  .random-btn.active {
+    transform: scale(1.25);
+    box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+    border-color: #fff;
+  }
+</style>
+</head>
+<body>
+
+<div id="palette"></div>
+
+<script>
+// === Configuration ===
+const CONFIG = {
+  PARTICLE_LIMIT: 800,
+  SPREAD_SPEED: 0.4,
+  MAX_RADIUS: 35,
+  FADE_DURATION: 50,     // seconds to fully disappear
+  SPAWN_COUNT: 3,        // particles per touch event
+  SPAWN_INTERVAL: 4,     // only spawn every N frames during drag
+  SPAWN_RADIUS: 12,
+  BG_COLOR: [250, 248, 245],
+  BLEND_RADIUS: 25,
+};
+
+// === Palette colors (kid-friendly, vivid watercolors) ===
+const PALETTE = [
+  { name: 'あか',     rgb: [220, 50, 47]  },
+  { name: 'きいろ',   rgb: [240, 200, 30] },
+  { name: 'あお',     rgb: [38, 120, 190] },
+  { name: 'みどり',   rgb: [46, 170, 80]  },
+  { name: 'むらさき', rgb: [150, 60, 180] },
+  { name: 'だいだい', rgb: [240, 130, 30] },
+];
+
+let particles = [];
+let activeColorIdx = 0;
+let randomMode = false;
+let paletteHeight = 72;
+let pg; // offscreen graphics buffer for watercolor layer
+
+// === CMY Subtractive Color Mixing ===
+function rgbToCmy(r, g, b) {
+  return [1 - r / 255, 1 - g / 255, 1 - b / 255];
+}
+function cmyToRgb(c, m, y) {
+  return [
+    Math.round(constrain((1 - c) * 255, 0, 255)),
+    Math.round(constrain((1 - m) * 255, 0, 255)),
+    Math.round(constrain((1 - y) * 255, 0, 255))
+  ];
+}
+function mixColors(rgb1, rgb2, ratio) {
+  const cmy1 = rgbToCmy(...rgb1);
+  const cmy2 = rgbToCmy(...rgb2);
+  return cmyToRgb(
+    cmy1[0] * (1 - ratio) + cmy2[0] * ratio,
+    cmy1[1] * (1 - ratio) + cmy2[1] * ratio,
+    cmy1[2] * (1 - ratio) + cmy2[2] * ratio
+  );
+}
+
+// === Particle (watercolor droplet) ===
+class Particle {
+  constructor(x, y, rgb) {
+    this.x = x;
+    this.y = y;
+    this.baseRgb = [...rgb];
+    this.rgb = [...rgb];
+    this.radius = 1 + Math.random() * 2;
+    this.maxRadius = CONFIG.MAX_RADIUS * (0.5 + Math.random() * 0.5);
+    this.alpha = 0.015 + Math.random() * 0.02;
+    this.maxAlpha = this.alpha;
+    this.growing = true;
+    this.birthTime = millis() / 1000;
+    this.noiseOff = Math.random() * 10000;
+    this.driftAngle = Math.random() * TWO_PI;
+    this.edgeWarp = 0.2 + Math.random() * 0.3;
+    this.alive = true;
+    this.mixed = false;
+    // Each particle has unique polygon shape for watercolor edges
+    this.vertices = this._generateShape();
+  }
+
+  _generateShape() {
+    const pts = [];
+    const n = 8 + Math.floor(Math.random() * 5); // 8-12 vertices
+    for (let i = 0; i < n; i++) {
+      const a = (TWO_PI / n) * i;
+      const r = 0.7 + noise(this.noiseOff + i * 0.5) * 0.6;
+      pts.push({ angle: a, r: r });
+    }
+    return pts;
+  }
+
+  update(dt) {
+    if (!this.alive) return;
+    const age = millis() / 1000 - this.birthTime;
+
+    // Growth: fast at first, decelerating
+    if (this.growing) {
+      const growRate = CONFIG.SPREAD_SPEED * dt * 60;
+      this.radius += growRate * (1 - this.radius / this.maxRadius);
+      if (this.radius >= this.maxRadius * 0.95) this.growing = false;
+    }
+
+    // Gentle noise drift
+    const nx = noise(this.noiseOff + age * 0.03);
+    const ny = noise(this.noiseOff + 500 + age * 0.03);
+    this.x += (nx - 0.5) * 0.2;
+    this.y += (ny - 0.5) * 0.2;
+
+    // Fade out
+    const fadeStart = CONFIG.FADE_DURATION * 0.35;
+    if (age > fadeStart) {
+      const fadeProgress = (age - fadeStart) / (CONFIG.FADE_DURATION * 0.65);
+      this.alpha = this.maxAlpha * Math.max(0, 1 - fadeProgress);
+      if (this.alpha <= 0.0005) {
+        this.alive = false;
+        this.alpha = 0;
+      }
+    }
+  }
+
+  draw(g) {
+    if (!this.alive || this.alpha <= 0) return;
+    const [r, b2, b] = this.rgb;
+
+    g.push();
+    g.translate(this.x, this.y);
+    g.noStroke();
+
+    // Draw 2 warped polygon layers for natural watercolor look
+    for (let layer = 0; layer < 2; layer++) {
+      const layerScale = 1.0 - layer * 0.15;
+      const layerAlpha = this.alpha * (layer === 0 ? 1.0 : 0.6);
+
+      g.fill(r, b2, b, layerAlpha * 255);
+      g.beginShape();
+      for (const v of this.vertices) {
+        const warpedR = v.r * this.radius * layerScale;
+        const wobble = noise(this.noiseOff + v.angle + layer * 3 + millis() * 0.00003) * 0.15;
+        const finalR = warpedR * (1 + wobble);
+        g.vertex(cos(v.angle) * finalR, sin(v.angle) * finalR);
+      }
+      g.endShape(CLOSE);
+    }
+
+    g.pop();
+  }
+}
+
+// === Color Mixing Between Nearby Particles ===
+function applyMixing() {
+  const grid = new Map();
+  const cellSize = CONFIG.BLEND_RADIUS * 2;
+
+  for (const p of particles) {
+    if (!p.alive || p.radius < 8) continue;
+    const key = `${Math.floor(p.x / cellSize)},${Math.floor(p.y / cellSize)}`;
+    if (!grid.has(key)) grid.set(key, []);
+    grid.get(key).push(p);
+  }
+
+  for (const p of particles) {
+    if (!p.alive || p.mixed || p.radius < 10) continue;
+    const cx = Math.floor(p.x / cellSize);
+    const cy = Math.floor(p.y / cellSize);
+
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const neighbors = grid.get(`${cx + dx},${cy + dy}`);
+        if (!neighbors) continue;
+        for (const q of neighbors) {
+          if (q === p || q.mixed) continue;
+          // Skip same base color
+          if (q.baseRgb[0] === p.baseRgb[0] &&
+              q.baseRgb[1] === p.baseRgb[1] &&
+              q.baseRgb[2] === p.baseRgb[2]) continue;
+
+          const d = dist(p.x, p.y, q.x, q.y);
+          const touchDist = p.radius + q.radius;
+          if (d < touchDist * 0.6) {
+            const ratio = 0.02;
+            p.rgb = mixColors(p.rgb, q.baseRgb, ratio);
+            q.rgb = mixColors(q.rgb, p.baseRgb, ratio);
+            p.mixed = true;
+            q.mixed = true;
+          }
+        }
+      }
+    }
+  }
+  for (const p of particles) p.mixed = false;
+}
+
+// === Spawn particles at touch point ===
+function spawnAt(x, y) {
+  const rgb = randomMode
+    ? PALETTE[Math.floor(Math.random() * PALETTE.length)].rgb
+    : PALETTE[activeColorIdx].rgb;
+
+  for (let i = 0; i < CONFIG.SPAWN_COUNT; i++) {
+    if (particles.length >= CONFIG.PARTICLE_LIMIT) {
+      const oldest = particles.find(p => p.alive);
+      if (oldest) oldest.alive = false;
+    }
+    const angle = Math.random() * TWO_PI;
+    const r = Math.random() * CONFIG.SPAWN_RADIUS;
+    particles.push(new Particle(x + cos(angle) * r, y + sin(angle) * r, rgb));
+  }
+}
+
+// === p5.js Lifecycle ===
+function setup() {
+  const canvas = createCanvas(windowWidth, windowHeight);
+  canvas.parent(document.body);
+  canvas.style('display', 'block');
+  pixelDensity(1);
+  pg = createGraphics(windowWidth, windowHeight);
+  pg.pixelDensity(1);
+  buildPalette();
+  background(...CONFIG.BG_COLOR);
+}
+
+function draw() {
+  const dt = deltaTime / 1000;
+
+  // Update particles
+  for (const p of particles) p.update(dt);
+  particles = particles.filter(p => p.alive);
+
+  // Mixing every few frames
+  if (frameCount % 4 === 0) applyMixing();
+
+  // Draw watercolor layer onto offscreen buffer
+  pg.clear();
+  for (const p of particles) p.draw(pg);
+
+  // Compose: background + watercolor layer
+  background(...CONFIG.BG_COLOR);
+  image(pg, 0, 0);
+
+  // Throttled spawn during drag
+  if (mouseIsPressed && mouseY < windowHeight - paletteHeight) {
+    if (frameCount % CONFIG.SPAWN_INTERVAL === 0) {
+      spawnAt(mouseX, mouseY);
+    }
+  }
+}
+
+function mousePressed() {
+  if (mouseY < windowHeight - paletteHeight) {
+    spawnAt(mouseX, mouseY);
+  }
+}
+
+function mouseDragged() {
+  // Handled in draw() with throttle
+  return false;
+}
+
+function touchStarted() {
+  if (touches.length > 0) {
+    const t = touches[0];
+    if (t.y < windowHeight - paletteHeight) {
+      spawnAt(t.x, t.y);
+    }
+  }
+  return false;
+}
+
+function touchMoved() {
+  if (touches.length > 0) {
+    const t = touches[0];
+    if (t.y < windowHeight - paletteHeight) {
+      if (frameCount % CONFIG.SPAWN_INTERVAL === 0) {
+        spawnAt(t.x, t.y);
+      }
+    }
+  }
+  return false;
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  pg = createGraphics(windowWidth, windowHeight);
+  pg.pixelDensity(1);
+  background(...CONFIG.BG_COLOR);
+}
+
+// === Palette UI ===
+function buildPalette() {
+  const container = document.getElementById('palette');
+  container.innerHTML = '';
+
+  PALETTE.forEach((c, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'color-btn' + (i === activeColorIdx && !randomMode ? ' active' : '');
+    btn.style.backgroundColor = `rgb(${c.rgb.join(',')})`;
+    btn.setAttribute('aria-label', c.name);
+    btn.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      activeColorIdx = i;
+      randomMode = false;
+      updatePaletteUI();
+    });
+    container.appendChild(btn);
+  });
+
+  const rBtn = document.createElement('button');
+  rBtn.className = 'random-btn' + (randomMode ? ' active' : '');
+  rBtn.textContent = '🎲';
+  rBtn.setAttribute('aria-label', 'ランダム');
+  rBtn.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    randomMode = true;
+    updatePaletteUI();
+  });
+  container.appendChild(rBtn);
+}
+
+function updatePaletteUI() {
+  const buttons = document.querySelectorAll('.color-btn');
+  buttons.forEach((btn, i) => {
+    btn.classList.toggle('active', i === activeColorIdx && !randomMode);
+  });
+  document.querySelector('.random-btn').classList.toggle('active', randomMode);
+}
+</script>
+</body>
+</html>
