@@ -76,18 +76,20 @@
 <script>
 // === Configuration ===
 const CONFIG = {
-  PARTICLE_LIMIT: 600,
-  SPREAD_SPEED: 0.35,
-  MAX_RADIUS: 28,
-  FADE_DURATION: 45,     // seconds to fully disappear
-  SPAWN_COUNT: 2,        // particles per touch event
-  SPAWN_INTERVAL: 5,     // only spawn every N frames during drag
-  SPAWN_RADIUS: 10,
+  PARTICLE_LIMIT: 500,
+  FADE_DURATION: 45,
+  SPAWN_COUNT: 3,
+  SPAWN_INTERVAL: 6,   // frames between drag spawns
+  SPAWN_RADIUS: 8,
   BG_COLOR: [250, 248, 245],
-  BLEND_RADIUS: 20,
+  BLEND_RADIUS: 18,
 };
 
-// === Palette colors (kid-friendly, vivid watercolors) ===
+// Responsive max radius: ~4% of shortest dimension
+function getMaxRadius() {
+  return Math.max(12, Math.min(windowWidth, windowHeight) * 0.035);
+}
+
 const PALETTE = [
   { name: 'あか',     rgb: [220, 50, 47]  },
   { name: 'きいろ',   rgb: [240, 200, 30] },
@@ -101,7 +103,8 @@ let particles = [];
 let activeColorIdx = 0;
 let randomMode = false;
 let paletteHeight = 72;
-let pg; // offscreen graphics buffer for watercolor layer
+let pg;
+let lastSpawnFrame = -999;
 
 // === CMY Subtractive Color Mixing ===
 function rgbToCmy(r, g, b) {
@@ -124,35 +127,35 @@ function mixColors(rgb1, rgb2, ratio) {
   );
 }
 
-// === Particle (watercolor droplet) ===
-class Particle {
+// === Watercolor Droplet ===
+class Droplet {
   constructor(x, y, rgb) {
     this.x = x;
     this.y = y;
     this.baseRgb = [...rgb];
     this.rgb = [...rgb];
-    this.radius = 1 + Math.random() * 2;
-    this.maxRadius = CONFIG.MAX_RADIUS * (0.5 + Math.random() * 0.5);
-    this.alpha = 0.012 + Math.random() * 0.015;
-    this.maxAlpha = this.alpha;
+    const maxR = getMaxRadius();
+    this.radius = 2;
+    this.maxRadius = maxR * (0.6 + Math.random() * 0.4);
+    this.growSpeed = 0.2 + Math.random() * 0.15;
+    this.alpha = 0;
+    this.peakAlpha = 0.04 + Math.random() * 0.03; // 0.04-0.07
     this.growing = true;
     this.birthTime = millis() / 1000;
     this.noiseOff = Math.random() * 10000;
-    this.driftAngle = Math.random() * TWO_PI;
-    this.edgeWarp = 0.2 + Math.random() * 0.3;
     this.alive = true;
     this.mixed = false;
-    // Each particle has unique polygon shape for watercolor edges
-    this.vertices = this._generateShape();
+    this.shape = this._makeShape();
   }
 
-  _generateShape() {
+  _makeShape() {
     const pts = [];
-    const n = 8 + Math.floor(Math.random() * 5); // 8-12 vertices
+    const n = 10 + Math.floor(Math.random() * 6);
     for (let i = 0; i < n; i++) {
       const a = (TWO_PI / n) * i;
-      const r = 0.7 + noise(this.noiseOff + i * 0.5) * 0.6;
-      pts.push({ angle: a, r: r });
+      // Vary radius 0.75-1.0 for organic edges
+      const r = 0.75 + noise(this.noiseOff + i * 0.7) * 0.25;
+      pts.push({ a, r });
     }
     return pts;
   }
@@ -161,73 +164,74 @@ class Particle {
     if (!this.alive) return;
     const age = millis() / 1000 - this.birthTime;
 
-    // Growth: fast at first, decelerating
+    // Phase 1: Grow + fade in (0-3s)
     if (this.growing) {
-      const growRate = CONFIG.SPREAD_SPEED * dt * 60;
-      this.radius += growRate * (1 - this.radius / this.maxRadius);
-      if (this.radius >= this.maxRadius * 0.95) this.growing = false;
+      this.radius += this.growSpeed * dt * 60 * (1 - this.radius / this.maxRadius);
+      this.alpha = Math.min(this.peakAlpha, this.alpha + this.peakAlpha * dt * 1.5);
+      if (this.radius >= this.maxRadius * 0.9) this.growing = false;
     }
 
-    // Gentle noise drift
-    const nx = noise(this.noiseOff + age * 0.03);
-    const ny = noise(this.noiseOff + 500 + age * 0.03);
-    this.x += (nx - 0.5) * 0.2;
-    this.y += (ny - 0.5) * 0.2;
+    // Phase 2: Hold (3s-30s) — very slow drift
+    const nx = noise(this.noiseOff + age * 0.02);
+    const ny = noise(this.noiseOff + 500 + age * 0.02);
+    this.x += (nx - 0.5) * 0.15;
+    this.y += (ny - 0.5) * 0.15;
 
-    // Fade out
-    const fadeStart = CONFIG.FADE_DURATION * 0.35;
+    // Phase 3: Fade out
+    const fadeStart = CONFIG.FADE_DURATION * 0.3;
     if (age > fadeStart) {
-      const fadeProgress = (age - fadeStart) / (CONFIG.FADE_DURATION * 0.65);
-      this.alpha = this.maxAlpha * Math.max(0, 1 - fadeProgress);
-      if (this.alpha <= 0.0005) {
+      const progress = (age - fadeStart) / (CONFIG.FADE_DURATION * 0.7);
+      this.alpha = this.peakAlpha * Math.max(0, 1 - progress);
+      if (this.alpha <= 0.001) {
         this.alive = false;
-        this.alpha = 0;
       }
     }
   }
 
   draw(g) {
-    if (!this.alive || this.alpha <= 0) return;
-    const [r, b2, b] = this.rgb;
+    if (!this.alive || this.alpha <= 0.001) return;
+    const [cr, cg, cb] = this.rgb;
 
     g.push();
     g.translate(this.x, this.y);
     g.noStroke();
 
-    // Draw 2 warped polygon layers for natural watercolor look
-    for (let layer = 0; layer < 2; layer++) {
-      const layerScale = 1.0 - layer * 0.15;
-      const layerAlpha = this.alpha * (layer === 0 ? 1.0 : 0.6);
-
-      g.fill(r, b2, b, layerAlpha * 255);
-      g.beginShape();
-      for (const v of this.vertices) {
-        const warpedR = v.r * this.radius * layerScale;
-        const wobble = noise(this.noiseOff + v.angle + layer * 3 + millis() * 0.00003) * 0.15;
-        const finalR = warpedR * (1 + wobble);
-        g.vertex(cos(v.angle) * finalR, sin(v.angle) * finalR);
-      }
-      g.endShape(CLOSE);
+    // Single organic polygon — clean watercolor wash
+    g.fill(cr, cg, cb, this.alpha * 255);
+    g.beginShape();
+    for (const v of this.shape) {
+      const finalR = v.r * this.radius;
+      g.vertex(cos(v.a) * finalR, sin(v.a) * finalR);
     }
+    g.endShape(CLOSE);
+
+    // Softer inner wash for depth
+    g.fill(cr, cg, cb, this.alpha * 0.5 * 255);
+    g.beginShape();
+    for (const v of this.shape) {
+      const finalR = v.r * this.radius * 0.65;
+      g.vertex(cos(v.a) * finalR, sin(v.a) * finalR);
+    }
+    g.endShape(CLOSE);
 
     g.pop();
   }
 }
 
-// === Color Mixing Between Nearby Particles ===
+// === Mixing ===
 function applyMixing() {
   const grid = new Map();
   const cellSize = CONFIG.BLEND_RADIUS * 2;
 
   for (const p of particles) {
-    if (!p.alive || p.radius < 8) continue;
+    if (!p.alive || p.radius < 6) continue;
     const key = `${Math.floor(p.x / cellSize)},${Math.floor(p.y / cellSize)}`;
     if (!grid.has(key)) grid.set(key, []);
     grid.get(key).push(p);
   }
 
   for (const p of particles) {
-    if (!p.alive || p.mixed || p.radius < 10) continue;
+    if (!p.alive || p.mixed || p.radius < 8) continue;
     const cx = Math.floor(p.x / cellSize);
     const cy = Math.floor(p.y / cellSize);
 
@@ -237,17 +241,14 @@ function applyMixing() {
         if (!neighbors) continue;
         for (const q of neighbors) {
           if (q === p || q.mixed) continue;
-          // Skip same base color
           if (q.baseRgb[0] === p.baseRgb[0] &&
               q.baseRgb[1] === p.baseRgb[1] &&
               q.baseRgb[2] === p.baseRgb[2]) continue;
 
           const d = dist(p.x, p.y, q.x, q.y);
-          const touchDist = p.radius + q.radius;
-          if (d < touchDist * 0.6) {
-            const ratio = 0.02;
-            p.rgb = mixColors(p.rgb, q.baseRgb, ratio);
-            q.rgb = mixColors(q.rgb, p.baseRgb, ratio);
+          if (d < (p.radius + q.radius) * 0.5) {
+            p.rgb = mixColors(p.rgb, q.baseRgb, 0.02);
+            q.rgb = mixColors(q.rgb, p.baseRgb, 0.02);
             p.mixed = true;
             q.mixed = true;
           }
@@ -258,7 +259,7 @@ function applyMixing() {
   for (const p of particles) p.mixed = false;
 }
 
-// === Spawn particles at touch point ===
+// === Spawn ===
 function spawnAt(x, y) {
   const rgb = randomMode
     ? PALETTE[Math.floor(Math.random() * PALETTE.length)].rgb
@@ -271,11 +272,19 @@ function spawnAt(x, y) {
     }
     const angle = Math.random() * TWO_PI;
     const r = Math.random() * CONFIG.SPAWN_RADIUS;
-    particles.push(new Particle(x + cos(angle) * r, y + sin(angle) * r, rgb));
+    particles.push(new Droplet(x + cos(angle) * r, y + sin(angle) * r, rgb));
   }
 }
 
-// === p5.js Lifecycle ===
+function canSpawnDrag() {
+  if (frameCount - lastSpawnFrame >= CONFIG.SPAWN_INTERVAL) {
+    lastSpawnFrame = frameCount;
+    return true;
+  }
+  return false;
+}
+
+// === p5.js ===
 function setup() {
   const canvas = createCanvas(windowWidth, windowHeight);
   canvas.parent(document.body);
@@ -290,26 +299,20 @@ function setup() {
 function draw() {
   const dt = deltaTime / 1000;
 
-  // Update particles
   for (const p of particles) p.update(dt);
   particles = particles.filter(p => p.alive);
 
-  // Mixing every few frames
-  if (frameCount % 4 === 0) applyMixing();
+  if (frameCount % 5 === 0) applyMixing();
 
-  // Draw watercolor layer onto offscreen buffer
   pg.clear();
   for (const p of particles) p.draw(pg);
 
-  // Compose: background + watercolor layer
   background(...CONFIG.BG_COLOR);
   image(pg, 0, 0);
 
-  // Throttled spawn during drag
-  if (mouseIsPressed && mouseY < windowHeight - paletteHeight) {
-    if (frameCount % CONFIG.SPAWN_INTERVAL === 0) {
-      spawnAt(mouseX, mouseY);
-    }
+  // Drag spawn (throttled)
+  if (mouseIsPressed && mouseY < windowHeight - paletteHeight && canSpawnDrag()) {
+    spawnAt(mouseX, mouseY);
   }
 }
 
@@ -320,7 +323,6 @@ function mousePressed() {
 }
 
 function mouseDragged() {
-  // Handled in draw() with throttle
   return false;
 }
 
@@ -337,10 +339,8 @@ function touchStarted() {
 function touchMoved() {
   if (touches.length > 0) {
     const t = touches[0];
-    if (t.y < windowHeight - paletteHeight) {
-      if (frameCount % CONFIG.SPAWN_INTERVAL === 0) {
-        spawnAt(t.x, t.y);
-      }
+    if (t.y < windowHeight - paletteHeight && canSpawnDrag()) {
+      spawnAt(t.x, t.y);
     }
   }
   return false;
