@@ -76,15 +76,15 @@
 <script>
 // === Configuration ===
 const CONFIG = {
-  PARTICLE_LIMIT: 800,
-  SPREAD_SPEED: 0.4,
-  MAX_RADIUS: 35,
-  FADE_DURATION: 50,     // seconds to fully disappear
-  SPAWN_COUNT: 3,        // particles per touch event
-  SPAWN_INTERVAL: 4,     // only spawn every N frames during drag
-  SPAWN_RADIUS: 12,
+  PARTICLE_LIMIT: 600,
+  SPREAD_SPEED: 0.35,
+  MAX_RADIUS: 28,
+  FADE_DURATION: 45,     // seconds to fully disappear
+  SPAWN_COUNT: 2,        // particles per touch event
+  SPAWN_INTERVAL: 5,     // only spawn every N frames during drag
+  SPAWN_RADIUS: 10,
   BG_COLOR: [250, 248, 245],
-  BLEND_RADIUS: 25,
+  BLEND_RADIUS: 20,
 };
 
 // === Palette colors (kid-friendly, vivid watercolors) ===
@@ -133,7 +133,7 @@ class Particle {
     this.rgb = [...rgb];
     this.radius = 1 + Math.random() * 2;
     this.maxRadius = CONFIG.MAX_RADIUS * (0.5 + Math.random() * 0.5);
-    this.alpha = 0.015 + Math.random() * 0.02;
+    this.alpha = 0.012 + Math.random() * 0.015;
     this.maxAlpha = this.alpha;
     this.growing = true;
     this.birthTime = millis() / 1000;
